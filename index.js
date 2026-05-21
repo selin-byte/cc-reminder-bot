@@ -229,58 +229,58 @@ cron.schedule("* * * * *", async () => {
 });
 
 const commands = [
-  new SlashCommandBuilder()
-    .setName("schedule")
-    .setDescription("Schedule a message")
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription("Channel. Leave empty to use current channel.")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("date")
-        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
-        .setRequired(true)
-    )
-    .addStringOption((option) =>
-      option.setName("time").setDescription("HH:mm").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option.setName("message").setDescription("Message").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("repeat")
-        .setDescription("Repeat schedule")
-        .setRequired(false)
-        .addChoices(
-          { name: "none", value: "none" },
-          { name: "daily", value: "daily" },
-          { name: "weekly", value: "weekly" },
-          { name: "monthly", value: "monthly" }
-        )
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("one_hour_before")
-        .setDescription("Send reminder 1 hour before")
-        .setRequired(false)
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("ping_everyone")
-        .setDescription("Ping @everyone")
-        .setRequired(false)
-    )
-    .addAttachmentOption((option) =>
-      option
-        .setName("image")
-        .setDescription("Optional image attachment")
-        .setRequired(false)
-    ),
-
+new SlashCommandBuilder()
+  .setName("schedule")
+  .setDescription("Schedule a message")
+  .addStringOption((option) =>
+    option
+      .setName("date")
+      .setDescription("DD-MM-YYYY or YYYY/MM/DD")
+      .setRequired(true)
+  )
+  .addStringOption((option) =>
+    option.setName("time").setDescription("HH:mm").setRequired(true)
+  )
+  .addStringOption((option) =>
+    option.setName("message").setDescription("Message").setRequired(true)
+  )
+  .addChannelOption((option) =>
+    option
+      .setName("channel")
+      .setDescription("Channel. Leave empty to use current channel.")
+      .setRequired(false)
+  )
+  .addStringOption((option) =>
+    option
+      .setName("repeat")
+      .setDescription("Repeat schedule")
+      .setRequired(false)
+      .addChoices(
+        { name: "none", value: "none" },
+        { name: "daily", value: "daily" },
+        { name: "weekly", value: "weekly" },
+        { name: "monthly", value: "monthly" }
+      )
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("one_hour_before")
+      .setDescription("Send reminder 1 hour before")
+      .setRequired(false)
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("ping_everyone")
+      .setDescription("Ping @everyone")
+      .setRequired(false)
+  )
+  .addAttachmentOption((option) =>
+    option
+      .setName("image")
+      .setDescription("Optional image attachment")
+      .setRequired(false)
+  ),
+  
   new SlashCommandBuilder()
     .setName("list")
     .setDescription("List active scheduled messages"),
