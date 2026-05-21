@@ -55,40 +55,28 @@ function parseDateTime(date, time) {
     { zone: serverTimezone }
   );
 }
-  let day, month, year;
-
-  if (date.includes("-")) {
-    [day, month, year] = date.split("-");
-  } else if (date.includes("/")) {
-    const parts = date.split("/");
-    if (parts[0].length === 4) {
-      [year, month, day] = parts;
-    } else {
-      [day, month, year] = parts;
-    }
-  }
-
-  return DateTime.fromObject(
-    {
-      year: Number(year),
-      month: Number(month),
-      day: Number(day),
-      hour: Number(time.split(":")[0]),
-      minute: Number(time.split(":")[1]),
-    },
-    { zone: serverTimezone }
-  );
-}
 
 async function sendScheduledMessage(item, type = "now") {
   const channel = await client.channels.fetch(item.channelId);
 
   const embed = new EmbedBuilder()
-    .setTitle(type === "before" ? "⏰ Reminder: Creator College Call Soon" : "🚨 Happening Now")
+    .setTitle(
+      type === "before"
+        ? "⏰ Reminder: Creator College Call Soon"
+        : "🚨 Happening Now"
+    )
     .setDescription(item.message)
     .addFields(
-      { name: "Time", value: `${item.displayDate} ${item.displayTime} (${serverTimezone})`, inline: true },
-      { name: "Channel", value: `#${item.channelName}`, inline: true }
+      {
+        name: "Time",
+        value: `${item.displayDate} ${item.displayTime} (${serverTimezone})`,
+        inline: true,
+      },
+      {
+        name: "Channel",
+        value: `#${item.channelName}`,
+        inline: true,
+      }
     )
     .setTimestamp();
 
@@ -104,10 +92,15 @@ async function sendScheduledMessage(item, type = "now") {
 }
 
 function advanceRecurringSchedule(item) {
-  if (item.repeat === "daily") item.target = item.target.plus({ days: 1 });
-  else if (item.repeat === "weekly") item.target = item.target.plus({ weeks: 1 });
-  else if (item.repeat === "monthly") item.target = item.target.plus({ months: 1 });
-  else item.sent = true;
+  if (item.repeat === "daily") {
+    item.target = item.target.plus({ days: 1 });
+  } else if (item.repeat === "weekly") {
+    item.target = item.target.plus({ weeks: 1 });
+  } else if (item.repeat === "monthly") {
+    item.target = item.target.plus({ months: 1 });
+  } else {
+    item.sent = true;
+  }
 
   item.reminderSent = false;
 }
@@ -122,13 +115,17 @@ client.on("interactionCreate", async (interaction) => {
     const message = interaction.options.getString("message");
     const image = interaction.options.getAttachment("image");
     const repeat = interaction.options.getString("repeat") || "none";
-    const oneHourBefore = interaction.options.getBoolean("one_hour_before") || false;
-    const pingEveryone = interaction.options.getBoolean("ping_everyone") || false;
+    const oneHourBefore =
+      interaction.options.getBoolean("one_hour_before") || false;
+    const pingEveryone =
+      interaction.options.getBoolean("ping_everyone") || false;
 
     const target = parseDateTime(date, time);
 
     if (!target.isValid) {
-      await interaction.reply("Invalid date/time. Use date like `21-05-2026` and time like `14:30`.");
+      await interaction.reply(
+        "Invalid date/time. Use date like `21-05-2026` and time like `14:30`."
+      );
       return;
     }
 
@@ -166,7 +163,10 @@ client.on("interactionCreate", async (interaction) => {
     const list = active
       .map(
         (item) =>
-          `ID ${item.id} — #${item.channelName} — ${item.displayDate} ${item.displayTime} — repeat: ${item.repeat} — ${item.message.slice(0, 80)}`
+          `ID ${item.id} — #${item.channelName} — ${item.displayDate} ${item.displayTime} — repeat: ${item.repeat} — ${item.message.slice(
+            0,
+            80
+          )}`
       )
       .join("\n");
 
@@ -203,7 +203,12 @@ cron.schedule("* * * * *", async () => {
 
     const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-    if (item.oneHourBefore && !item.reminderSent && minutesUntil <= 60 && minutesUntil > 59) {
+    if (
+      item.oneHourBefore &&
+      !item.reminderSent &&
+      minutesUntil <= 60 &&
+      minutesUntil > 59
+    ) {
       await sendScheduledMessage(item, "before");
       item.reminderSent = true;
     }
@@ -223,7 +228,10 @@ const commands = [
       option.setName("channel").setDescription("Channel").setRequired(true)
     )
     .addStringOption((option) =>
-      option.setName("date").setDescription("DD-MM-YYYY or YYYY/MM/DD").setRequired(true)
+      option
+        .setName("date")
+        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
+        .setRequired(true)
     )
     .addStringOption((option) =>
       option.setName("time").setDescription("HH:mm").setRequired(true)
@@ -244,7 +252,9 @@ const commands = [
         )
     )
     .addBooleanOption((option) =>
-      option.setName("one_hour_before").setDescription("Send reminder 1 hour before")
+      option
+        .setName("one_hour_before")
+        .setDescription("Send reminder 1 hour before")
     )
     .addBooleanOption((option) =>
       option.setName("ping_everyone").setDescription("Ping @everyone")
@@ -268,7 +278,10 @@ const commands = [
     .setName("timezone")
     .setDescription("Set timezone")
     .addStringOption((option) =>
-      option.setName("zone").setDescription("Example: Europe/London").setRequired(true)
+      option
+        .setName("zone")
+        .setDescription("Example: Europe/London")
+        .setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
