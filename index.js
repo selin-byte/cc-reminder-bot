@@ -42,6 +42,7 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
+
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
@@ -70,10 +71,25 @@ function convertDiscordTimestamps(message) {
     /\{\{time:(\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+(\d{2}:\d{2})\}\}/g,
     (match, date, time) => {
       const dt = parseDateTime(date, time);
+
       if (!dt.isValid) return match;
+
       return `<t:${Math.floor(dt.toSeconds())}:F>`;
     }
   );
+}
+
+function extractChannelIds(rawChannels) {
+  if (!rawChannels) return [];
+
+  const ids = [];
+  const matches = rawChannels.matchAll(/<#(\d+)>/g);
+
+  for (const match of matches) {
+    ids.push(match[1]);
+  }
+
+  return [...new Set(ids)];
 }
 
 async function sendScheduledMessage(item) {
@@ -91,10 +107,15 @@ async function sendScheduledMessage(item) {
 }
 
 function advanceRecurringSchedule(item) {
-  if (item.repeat === "daily") item.target = item.target.plus({ days: 1 });
-  else if (item.repeat === "weekly") item.target = item.target.plus({ weeks: 1 });
-  else if (item.repeat === "monthly") item.target = item.target.plus({ months: 1 });
-  else item.sent = true;
+  if (item.repeat === "daily") {
+    item.target = item.target.plus({ days: 1 });
+  } else if (item.repeat === "weekly") {
+    item.target = item.target.plus({ weeks: 1 });
+  } else if (item.repeat === "monthly") {
+    item.target = item.target.plus({ months: 1 });
+  } else {
+    item.sent = true;
+  }
 
   item.reminderSent = false;
 }
@@ -106,27 +127,16 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "schedule") {
       await interaction.deferReply({ ephemeral: true });
 
-      const selectedChannel = interaction.options.getChannel("channel");
-      const selectedChannel2 = interaction.options.getChannel("channel2");
-      const selectedChannel3 = interaction.options.getChannel("channel3");
-
-      const channels = [
-  selectedChannel,
-  selectedChannel2,
-  selectedChannel3,
-].filter((c) => c && c.id);
-
-if (channels.length === 0 && interaction.channel) {
-  channels.push(interaction.channel);
-}
-
       const date = interaction.options.getString("date");
       const time = interaction.options.getString("time");
       const message = interaction.options.getString("message");
+      const rawChannels = interaction.options.getString("channel");
       const image = interaction.options.getAttachment("image");
       const repeat = interaction.options.getString("repeat") || "none";
-      const oneHourBefore = interaction.options.getBoolean("one_hour_before") || false;
-      const pingEveryone = interaction.options.getBoolean("ping_everyone") || false;
+      const oneHourBefore =
+        interaction.options.getBoolean("one_hour_before") || false;
+      const pingEveryone =
+        interaction.options.getBoolean("ping_everyone") || false;
 
       const target = parseDateTime(date, time);
 
@@ -137,10 +147,27 @@ if (channels.length === 0 && interaction.channel) {
         return;
       }
 
+      const channelIdsFromInput = extractChannelIds(rawChannels);
+      const channelIds =
+        channelIdsFromInput.length > 0
+          ? channelIdsFromInput
+          : [interaction.channelId];
+
+      const channelNames = [];
+
+      for (const channelId of channelIds) {
+        try {
+          const channel = await client.channels.fetch(channelId);
+          channelNames.push(channel?.name || channelId);
+        } catch {
+          channelNames.push(channelId);
+        }
+      }
+
       const schedule = {
         id: nextId++,
-        channelIds: channels.map((channel) => channel.id),
-        channelNames: channels.map((channel) => channel.name),
+        channelIds,
+        channelNames,
         displayDate: date,
         displayTime: time,
         message,
@@ -156,7 +183,7 @@ if (channels.length === 0 && interaction.channel) {
       schedules.push(schedule);
 
       await interaction.editReply({
-        content: `Scheduled ID ${schedule.id} for ${date} ${time} in ${schedule.channelNames
+        content: `Scheduled ID ${schedule.id} for ${date} ${time} in ${channelNames
           .map((name) => `#${name}`)
           .join(", ")}. Repeat: ${repeat}.`,
       });
@@ -168,18 +195,26 @@ if (channels.length === 0 && interaction.channel) {
       const active = schedules.filter((item) => !item.sent);
 
       if (active.length === 0) {
-        await interaction.editReply({ content: "No active scheduled messages." });
+        await interaction.editReply({
+          content: "No active scheduled messages.",
+        });
         return;
       }
 
       const list = active
         .map(
           (item) =>
-            `ID ${item.id} — ${item.channelNames.map((name) => `#${name}`).join(", ")} — ${item.displayDate} ${item.displayTime} — ${item.message.slice(0, 80)}`
+            `ID ${item.id} — ${item.channelNames
+              .map((name) => `#${name}`)
+              .join(", ")} — ${item.displayDate} ${item.displayTime} — repeat: ${
+              item.repeat
+            } — ${item.message.slice(0, 80)}`
         )
         .join("\n");
 
-      await interaction.editReply({ content: "Active schedules:\n" + list });
+      await interaction.editReply({
+        content: "Active schedules:\n" + list,
+      });
     }
 
     if (interaction.commandName === "cancel") {
@@ -249,7 +284,10 @@ const commands = [
     .setName("schedule")
     .setDescription("Schedule a message")
     .addStringOption((option) =>
-      option.setName("date").setDescription("DD-MM-YYYY or YYYY/MM/DD").setRequired(true)
+      option
+        .setName("date")
+        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
+        .setRequired(true)
     )
     .addStringOption((option) =>
       option.setName("time").setDescription("HH:mm").setRequired(true)
@@ -257,14 +295,13 @@ const commands = [
     .addStringOption((option) =>
       option.setName("message").setDescription("Message").setRequired(true)
     )
-    .addChannelOption((option) =>
-      option.setName("channel").setDescription("Leave empty to use current channel").setRequired(false)
-    )
-    .addChannelOption((option) =>
-      option.setName("channel2").setDescription("Optional second channel").setRequired(false)
-    )
-    .addChannelOption((option) =>
-      option.setName("channel3").setDescription("Optional third channel").setRequired(false)
+    .addStringOption((option) =>
+      option
+        .setName("channel")
+        .setDescription(
+          "Optional. Mention one or more channels, e.g. #chat #wins"
+        )
+        .setRequired(false)
     )
     .addStringOption((option) =>
       option
@@ -279,16 +316,27 @@ const commands = [
         )
     )
     .addBooleanOption((option) =>
-      option.setName("one_hour_before").setDescription("Send reminder 1 hour before").setRequired(false)
+      option
+        .setName("one_hour_before")
+        .setDescription("Send reminder 1 hour before")
+        .setRequired(false)
     )
     .addBooleanOption((option) =>
-      option.setName("ping_everyone").setDescription("Ping @everyone").setRequired(false)
+      option
+        .setName("ping_everyone")
+        .setDescription("Ping @everyone")
+        .setRequired(false)
     )
     .addAttachmentOption((option) =>
-      option.setName("image").setDescription("Optional image attachment").setRequired(false)
+      option
+        .setName("image")
+        .setDescription("Optional image attachment")
+        .setRequired(false)
     ),
 
-  new SlashCommandBuilder().setName("list").setDescription("List active scheduled messages"),
+  new SlashCommandBuilder()
+    .setName("list")
+    .setDescription("List active scheduled messages"),
 
   new SlashCommandBuilder()
     .setName("cancel")
@@ -301,7 +349,10 @@ const commands = [
     .setName("timezone")
     .setDescription("Set timezone")
     .addStringOption((option) =>
-      option.setName("zone").setDescription("Example: Europe/London").setRequired(true)
+      option
+        .setName("zone")
+        .setDescription("Example: Europe/London")
+        .setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
