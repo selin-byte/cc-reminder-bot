@@ -8,28 +8,67 @@ const {
 
 const cron = require("node-cron");
 const { DateTime } = require("luxon");
+const fs = require("fs");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-let schedules = [];
-let nextId = 1;
-let serverTimezone = "Europe/London";
+const SCHEDULES_FILE = "./schedules.json";
+const SETTINGS_FILE = "./settings.json";
+
+let schedules = loadJson(SCHEDULES_FILE, []);
+let settings = loadJson(SETTINGS_FILE, {
+  timezone: "Europe/London",
+});
+
+let nextId =
+  schedules.length > 0 ? Math.max(...schedules.map((s) => s.id)) + 1 : 1;
+
+function loadJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
-function normalizeTimezone(zone) {
-  const value = zone.trim().toLowerCase();
+function normalizeTimezone(input) {
+  if (!input) return settings.timezone;
 
-  if (value === "london") return "Europe/London";
-  if (value === "uk") return "Europe/London";
-  if (value === "turkey") return "Europe/Istanbul";
-  if (value === "istanbul") return "Europe/Istanbul";
+  const value = input.trim().toLowerCase();
 
-  return zone.trim();
+  const aliases = {
+    london: "Europe/London",
+    uk: "Europe/London",
+    "gmt+1": "Europe/London",
+    bst: "Europe/London",
+
+    turkey: "Europe/Istanbul",
+    istanbul: "Europe/Istanbul",
+    "gmt+3": "Europe/Istanbul",
+
+    edt: "America/New_York",
+    est: "America/New_York",
+    et: "America/New_York",
+    "new york": "America/New_York",
+
+    pdt: "America/Los_Angeles",
+    pst: "America/Los_Angeles",
+    pt: "America/Los_Angeles",
+    "los angeles": "America/Los_Angeles",
+  };
+
+  return aliases[value] || input.trim();
 }
 
 function parseDateTime(date, time) {
@@ -42,18 +81,19 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
+
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
       [day, month, year] = parts;
     }
   } else {
-    return { isValid: false };
+    return null;
   }
 
   const [hour, minute] = cleanTime.split(":");
 
-  return DateTime.fromObject(
+  const dt = DateTime.fromObject(
     {
       year: Number(year),
       month: Number(month),
@@ -61,23 +101,16 @@ function parseDateTime(date, time) {
       hour: Number(hour),
       minute: Number(minute),
     },
-    { zone: serverTimezone }
+    { zone: settings.timezone }
   );
+
+  return dt.isValid ? dt : null;
 }
 
-function convertDiscordTimestamps(message) {
-  return message.replace(
-    /\{\{time:(\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+(\d{2}:\d{2})\}\}/g,
-    (match, date, time) => {
-      const dt = parseDateTime(date, time);
-      if (!dt.isValid) return match;
-      return `<t:${Math.floor(dt.toSeconds())}:F>`;
-    }
-  );
-}
-
-function extractChannelIds(rawChannels) {
-  if (!rawChannels) return [];
+function extractChannelIds(rawChannels, fallbackChannelId) {
+  if (!rawChannels || rawChannels.trim() === "") {
+    return [fallbackChannelId];
+  }
 
   const ids = [];
   const matches = rawChannels.matchAll(/<#(\d+)>/g);
@@ -89,38 +122,67 @@ function extractChannelIds(rawChannels) {
   return [...new Set(ids)];
 }
 
-async function sendScheduledMessage(item) {
-  const message = convertDiscordTimestamps(item.message);
+function splitMessage(text, maxLength = 1900) {
+  if (text.length <= maxLength) return [text];
 
-  for (const channelId of item.channelIds) {
-    const channel = await client.channels.fetch(channelId);
+  const chunks = [];
+  let current = "";
 
-    await channel.send({
-      content: `${item.pingEveryone ? "@everyone\n" : ""}${message}`,
-      files: item.imageUrl ? [item.imageUrl] : [],
-      allowedMentions: { parse: ["everyone", "roles"] },
-    });
+  for (const line of text.split("\n")) {
+    if ((current + "\n" + line).length > maxLength) {
+      if (current) chunks.push(current);
+      current = line;
+    } else {
+      current = current ? `${current}\n${line}` : line;
+    }
   }
+
+  if (current) chunks.push(current);
+  return chunks;
 }
 
-function advanceRecurringSchedule(item) {
-  if (item.repeat === "daily") {
-    item.target = item.target.plus({ days: 1 });
-  } else if (item.repeat === "weekly") {
-    item.target = item.target.plus({ weeks: 1 });
-  } else if (item.repeat === "monthly") {
-    item.target = item.target.plus({ months: 1 });
-  } else {
-    item.sent = true;
-  }
+async function sendScheduledMessage(schedule) {
+  for (const channelId of schedule.channelIds) {
+    const channel = await client.channels.fetch(channelId);
+    const chunks = splitMessage(schedule.message);
 
-  item.reminderSent = false;
+    for (let i = 0; i < chunks.length; i++) {
+      await channel.send({
+        content: chunks[i],
+        files: i === 0 && schedule.imageUrl ? [schedule.imageUrl] : [],
+        allowedMentions: { parse: ["everyone", "roles"] },
+      });
+    }
+  }
 }
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
+    if (interaction.commandName === "timezone") {
+      await interaction.deferReply({ ephemeral: true });
+
+      const zoneInput = interaction.options.getString("zone");
+      const zone = normalizeTimezone(zoneInput);
+
+      const test = DateTime.now().setZone(zone);
+      if (!test.isValid) {
+        await interaction.editReply({
+          content:
+            "Invalid timezone. Use something like `Europe/London`, `GMT+1`, `EDT`, or `Europe/Istanbul`.",
+        });
+        return;
+      }
+
+      settings.timezone = zone;
+      saveJson(SETTINGS_FILE, settings);
+
+      await interaction.editReply({
+        content: `Timezone set to ${settings.timezone}.`,
+      });
+    }
+
     if (interaction.commandName === "schedule") {
       await interaction.deferReply({ ephemeral: true });
 
@@ -129,26 +191,25 @@ client.on("interactionCreate", async (interaction) => {
       const message = interaction.options.getString("message");
       const rawChannels = interaction.options.getString("channel");
       const image = interaction.options.getAttachment("image");
-      const repeat = interaction.options.getString("repeat") || "none";
-      const oneHourBefore =
-        interaction.options.getBoolean("one_hour_before") || false;
-      const pingEveryone =
-        interaction.options.getBoolean("ping_everyone") || false;
 
       const target = parseDateTime(date, time);
 
-      if (!target.isValid) {
+      if (!target) {
         await interaction.editReply({
           content: "Invalid date/time. Use `21-05-2026` and `14:30`.",
         });
         return;
       }
 
-      const channelIdsFromInput = extractChannelIds(rawChannels);
-      const channelIds =
-        channelIdsFromInput.length > 0
-          ? channelIdsFromInput
-          : [interaction.channelId];
+      const channelIds = extractChannelIds(rawChannels, interaction.channelId);
+
+      if (channelIds.length === 0) {
+        await interaction.editReply({
+          content:
+            "No valid channels found. Leave channel empty or mention channels like `#chat #wins`.",
+        });
+        return;
+      }
 
       const channelNames = [];
 
@@ -163,33 +224,31 @@ client.on("interactionCreate", async (interaction) => {
 
       const schedule = {
         id: nextId++,
+        date,
+        time,
+        timezone: settings.timezone,
+        targetISO: target.toISO(),
         channelIds,
         channelNames,
-        displayDate: date,
-        displayTime: time,
         message,
         imageUrl: image ? image.url : null,
-        repeat,
-        oneHourBefore,
-        pingEveryone,
-        target,
         sent: false,
-        reminderSent: false,
       };
 
       schedules.push(schedule);
+      saveJson(SCHEDULES_FILE, schedules);
 
       await interaction.editReply({
-        content: `Scheduled ID ${schedule.id} for ${date} ${time} in ${channelNames
+        content: `Scheduled ID ${schedule.id} for ${date} ${time} (${settings.timezone}) in ${channelNames
           .map((name) => `#${name}`)
-          .join(", ")}. Repeat: ${repeat}.`,
+          .join(", ")}.`,
       });
     }
 
     if (interaction.commandName === "list") {
       await interaction.deferReply({ ephemeral: true });
 
-      const active = schedules.filter((item) => !item.sent);
+      const active = schedules.filter((s) => !s.sent);
 
       if (active.length === 0) {
         await interaction.editReply({
@@ -198,19 +257,17 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const list = active
-        .map(
-          (item) =>
-            `ID ${item.id} — ${item.channelNames
-              .map((name) => `#${name}`)
-              .join(", ")} — ${item.displayDate} ${item.displayTime} — repeat: ${
-              item.repeat
-            } — ${item.message.slice(0, 80)}`
-        )
-        .join("\n");
-
       await interaction.editReply({
-        content: "Active schedules:\n" + list,
+        content:
+          "Active schedules:\n" +
+          active
+            .map(
+              (s) =>
+                `ID ${s.id} — ${s.date} ${s.time} (${s.timezone}) — ${s.channelNames
+                  .map((name) => `#${name}`)
+                  .join(", ")} — ${s.message.slice(0, 80)}`
+            )
+            .join("\n"),
       });
     }
 
@@ -220,24 +277,14 @@ client.on("interactionCreate", async (interaction) => {
       const id = interaction.options.getInteger("id");
       const before = schedules.length;
 
-      schedules = schedules.filter((item) => item.id !== id);
+      schedules = schedules.filter((s) => s.id !== id);
+      saveJson(SCHEDULES_FILE, schedules);
 
       await interaction.editReply({
         content:
           schedules.length === before
             ? `No schedule found with ID ${id}.`
             : `Cancelled schedule ID ${id}.`,
-      });
-    }
-
-    if (interaction.commandName === "timezone") {
-      await interaction.deferReply({ ephemeral: true });
-
-      const zone = normalizeTimezone(interaction.options.getString("zone"));
-      serverTimezone = zone;
-
-      await interaction.editReply({
-        content: `Timezone set to ${serverTimezone}.`,
       });
     }
   } catch (error) {
@@ -251,28 +298,25 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-cron.schedule("* * * * *", async () => {
-  const now = DateTime.now().setZone(serverTimezone);
+cron.schedule("*/10 * * * * *", async () => {
+  const now = DateTime.utc();
+  let changed = false;
 
-  for (const item of schedules) {
-    if (item.sent) continue;
+  for (const schedule of schedules) {
+    if (schedule.sent) continue;
 
-    const minutesUntil = item.target.diff(now, "minutes").minutes;
+    const target = DateTime.fromISO(schedule.targetISO).toUTC();
+    const secondsUntil = target.diff(now, "seconds").seconds;
 
-    if (
-      item.oneHourBefore &&
-      !item.reminderSent &&
-      minutesUntil <= 60 &&
-      minutesUntil > 55
-    ) {
-      await sendScheduledMessage(item);
-      item.reminderSent = true;
+    if (secondsUntil <= 0 && secondsUntil > -120) {
+      await sendScheduledMessage(schedule);
+      schedule.sent = true;
+      changed = true;
     }
+  }
 
-    if (minutesUntil <= 0 && minutesUntil > -5) {
-      await sendScheduledMessage(item);
-      advanceRecurringSchedule(item);
-    }
+  if (changed) {
+    saveJson(SCHEDULES_FILE, schedules);
   }
 });
 
@@ -295,31 +339,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("channel")
-        .setDescription("Optional. Mention one or more channels, e.g. #chat #wins")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("repeat")
-        .setDescription("Repeat schedule")
-        .setRequired(false)
-        .addChoices(
-          { name: "none", value: "none" },
-          { name: "daily", value: "daily" },
-          { name: "weekly", value: "weekly" },
-          { name: "monthly", value: "monthly" }
-        )
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("one_hour_before")
-        .setDescription("Send reminder 1 hour before")
-        .setRequired(false)
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("ping_everyone")
-        .setDescription("Ping @everyone")
+        .setDescription("Optional. Mention channels like #chat #wins")
         .setRequired(false)
     )
     .addAttachmentOption((option) =>
@@ -327,6 +347,16 @@ const commands = [
         .setName("image")
         .setDescription("Optional image attachment")
         .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("timezone")
+    .setDescription("Set the timezone for future schedules")
+    .addStringOption((option) =>
+      option
+        .setName("zone")
+        .setDescription("Europe/London, GMT+1, EDT, Europe/Istanbul")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
@@ -338,16 +368,6 @@ const commands = [
     .setDescription("Cancel a scheduled message")
     .addIntegerOption((option) =>
       option.setName("id").setDescription("Schedule ID").setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("timezone")
-    .setDescription("Set timezone")
-    .addStringOption((option) =>
-      option
-        .setName("zone")
-        .setDescription("Example: Europe/London")
-        .setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
