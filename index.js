@@ -12,7 +12,8 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const schedules = [];
+let schedules = [];
+let nextId = 1;
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -23,17 +24,64 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "schedule") {
     const channel = interaction.options.getChannel("channel");
-    const time = interaction.options.getString("time");
+    const date = interaction.options.getString("date"); // DD-MM-YYYY
+    const time = interaction.options.getString("time"); // HH:mm
     const message = interaction.options.getString("message");
 
-    schedules.push({
+    const [day, month, year] = date.split("-");
+    const fullTime = `${year}-${month}-${day}T${time}:00`;
+
+    const schedule = {
+      id: nextId++,
       channelId: channel.id,
-      time,
+      channelName: channel.name,
+      time: fullTime,
+      displayDate: date,
+      displayTime: time,
       message,
       sent: false,
-    });
+    };
 
-    await interaction.reply(`Scheduled for ${time}`);
+    schedules.push(schedule);
+
+    await interaction.reply(
+      `Scheduled message ID ${schedule.id} for ${date} ${time} London time in #${channel.name}`
+    );
+  }
+
+  if (interaction.commandName === "list") {
+    const active = schedules.filter((item) => !item.sent);
+
+    if (active.length === 0) {
+      await interaction.reply("No active scheduled messages.");
+      return;
+    }
+
+    const list = active
+      .map(
+        (item) =>
+          `ID ${item.id} — #${item.channelName} — ${item.displayDate} ${item.displayTime} — ${item.message.slice(
+            0,
+            80
+          )}`
+      )
+      .join("\n");
+
+    await interaction.reply("Active schedules:\n" + list);
+  }
+
+  if (interaction.commandName === "cancel") {
+    const id = interaction.options.getInteger("id");
+
+    const before = schedules.length;
+    schedules = schedules.filter((item) => item.id !== id);
+
+    if (schedules.length === before) {
+      await interaction.reply(`No schedule found with ID ${id}.`);
+      return;
+    }
+
+    await interaction.reply(`Cancelled schedule ID ${id}.`);
   }
 });
 
@@ -61,10 +109,24 @@ const commands = [
       option.setName("channel").setDescription("Channel").setRequired(true)
     )
     .addStringOption((option) =>
-      option.setName("time").setDescription("2026-05-22T18:00:00").setRequired(true)
+      option.setName("date").setDescription("DD-MM-YYYY").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("time").setDescription("HH:mm").setRequired(true)
     )
     .addStringOption((option) =>
       option.setName("message").setDescription("Message").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("list")
+    .setDescription("List active scheduled messages"),
+
+  new SlashCommandBuilder()
+    .setName("cancel")
+    .setDescription("Cancel a scheduled message")
+    .addIntegerOption((option) =>
+      option.setName("id").setDescription("Schedule ID").setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
