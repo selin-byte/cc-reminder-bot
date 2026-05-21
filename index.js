@@ -21,19 +21,9 @@ client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
-function normalizeTimezone(zone) {
-  const value = zone.trim().toLowerCase();
-
-  if (value === "london" || value === "uk" || value === "gmt+1") return "Europe/London";
-  if (value === "turkey" || value === "istanbul" || value === "gmt+3") return "Europe/Istanbul";
-  if (value === "edt" || value === "est" || value === "et") return "America/New_York";
-
-  return zone.trim();
-}
-
 function parseDateTime(date, time) {
   const cleanDate = date.trim();
-  const cleanTime = time.trim().replace(/\s/g, "");
+  const cleanTime = time.trim();
 
   let day, month, year;
 
@@ -41,6 +31,7 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
+
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
@@ -64,92 +55,92 @@ function parseDateTime(date, time) {
   );
 }
 
-function getChannelIds(rawChannels, fallbackChannelId) {
-  if (!rawChannels || rawChannels.trim() === "") {
-    return [fallbackChannelId];
-  }
+function convertDiscordTimestamps(message) {
+  return message.replace(
+    /\{\{time:(\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+(\d{2}:\d{2})\}\}/g,
+    (match, date, time) => {
+      const dt = parseDateTime(date, time);
+      if (!dt.isValid) return match;
 
-  const ids = [];
-  const matches = rawChannels.matchAll(/<#(\d+)>/g);
-
-  for (const match of matches) {
-    ids.push(match[1]);
-  }
-
-  return [...new Set(ids)];
+      const unix = Math.floor(dt.toSeconds());
+      return `<t:${unix}:F>`;
+    }
+  );
 }
 
-async function sendScheduledMessage(item) {
-  for (const channelId of item.channelIds) {
-    const channel = await client.channels.fetch(channelId);
+async function sendScheduledMessage(item, type = "now") {
+  const channel = await client.channels.fetch(item.channelId);
+  const messageWithTimestamps = convertDiscordTimestamps(item.message);
 
-    await channel.send({
-      content: item.message,
-      files: item.imageUrl ? [item.imageUrl] : [],
-      allowedMentions: { parse: ["everyone", "roles"] },
-    });
+  await channel.send({
+    content: `${item.pingEveryone ? "@everyone\n" : ""}${messageWithTimestamps}`,
+    files: item.imageUrl ? [item.imageUrl] : [],
+    allowedMentions: { parse: ["everyone", "roles"] },
+  });
+}
+
+function advanceRecurringSchedule(item) {
+  if (item.repeat === "daily") {
+    item.target = item.target.plus({ days: 1 });
+  } else if (item.repeat === "weekly") {
+    item.target = item.target.plus({ weeks: 1 });
+  } else if (item.repeat === "monthly") {
+    item.target = item.target.plus({ months: 1 });
+  } else {
+    item.sent = true;
   }
+
+  item.reminderSent = false;
 }
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "schedule") {
+    const selectedChannel = interaction.options.getChannel("channel");
+    const channel = selectedChannel || interaction.channel;
+
     const date = interaction.options.getString("date");
     const time = interaction.options.getString("time");
     const message = interaction.options.getString("message");
-    const rawChannels = interaction.options.getString("channel");
     const image = interaction.options.getAttachment("image");
+    const repeat = interaction.options.getString("repeat") || "none";
+    const oneHourBefore =
+      interaction.options.getBoolean("one_hour_before") || false;
+    const pingEveryone =
+      interaction.options.getBoolean("ping_everyone") || false;
 
     const target = parseDateTime(date, time);
 
     if (!target.isValid) {
       await interaction.reply({
-        content: "Invalid date/time. Use `21-05-2026` and `14:30`.",
+        content:
+          "Invalid date/time. Use date like `21-05-2026` and time like `14:30`.",
         ephemeral: true,
       });
       return;
-    }
-
-    const channelIds = getChannelIds(rawChannels, interaction.channelId);
-
-    if (channelIds.length === 0) {
-      await interaction.reply({
-        content: "No valid channel found. Leave channel empty or mention channels like `#chat #wins`.",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const channelNames = [];
-
-    for (const channelId of channelIds) {
-      try {
-        const channel = await client.channels.fetch(channelId);
-        channelNames.push(channel?.name || channelId);
-      } catch {
-        channelNames.push(channelId);
-      }
     }
 
     const schedule = {
       id: nextId++,
-      channelIds,
-      channelNames,
+      channelId: channel.id,
+      channelName: channel.name,
       displayDate: date,
       displayTime: time,
       message,
       imageUrl: image ? image.url : null,
+      repeat,
+      oneHourBefore,
+      pingEveryone,
       target,
       sent: false,
+      reminderSent: false,
     };
 
     schedules.push(schedule);
 
     await interaction.reply({
-      content: `Scheduled ID ${schedule.id} for ${date} ${time} (${serverTimezone}) in ${channelNames
-        .map((name) => `#${name}`)
-        .join(", ")}.`,
+      content: `Scheduled ID ${schedule.id} for ${date} ${time} in #${channel.name}. Repeat: ${repeat}.`,
       ephemeral: true,
     });
   }
@@ -168,9 +159,10 @@ client.on("interactionCreate", async (interaction) => {
     const list = active
       .map(
         (item) =>
-          `ID ${item.id} — ${item.displayDate} ${item.displayTime} (${serverTimezone}) — ${item.channelNames
-            .map((name) => `#${name}`)
-            .join(", ")} — ${item.message.slice(0, 80)}`
+          `ID ${item.id} — #${item.channelName} — ${item.displayDate} ${item.displayTime} — repeat: ${item.repeat} — ${item.message.slice(
+            0,
+            80
+          )}`
       )
       .join("\n");
 
@@ -186,27 +178,22 @@ client.on("interactionCreate", async (interaction) => {
 
     schedules = schedules.filter((item) => item.id !== id);
 
-    await interaction.reply({
-      content:
-        schedules.length === before
-          ? `No schedule found with ID ${id}.`
-          : `Cancelled schedule ID ${id}.`,
-      ephemeral: true,
-    });
-  }
-
-  if (interaction.commandName === "timezone") {
-    const zone = normalizeTimezone(interaction.options.getString("zone"));
-    const test = DateTime.now().setZone(zone);
-
-    if (!test.isValid) {
+    if (schedules.length === before) {
       await interaction.reply({
-        content: "Invalid timezone. Try `Europe/London`, `GMT+1`, `EDT`, or `Europe/Istanbul`.",
+        content: `No schedule found with ID ${id}.`,
         ephemeral: true,
       });
       return;
     }
 
+    await interaction.reply({
+      content: `Cancelled schedule ID ${id}.`,
+      ephemeral: true,
+    });
+  }
+
+  if (interaction.commandName === "timezone") {
+    const zone = interaction.options.getString("zone");
     serverTimezone = zone;
 
     await interaction.reply({
@@ -216,17 +203,27 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-cron.schedule("*/10 * * * * *", async () => {
+cron.schedule("* * * * *", async () => {
   const now = DateTime.now().setZone(serverTimezone);
 
   for (const item of schedules) {
     if (item.sent) continue;
 
-    const secondsUntil = item.target.diff(now, "seconds").seconds;
+    const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-    if (secondsUntil <= 0) {
-      await sendScheduledMessage(item);
-      item.sent = true;
+    if (
+      item.oneHourBefore &&
+      !item.reminderSent &&
+      minutesUntil <= 60 &&
+      minutesUntil > 59
+    ) {
+      await sendScheduledMessage(item, "before");
+      item.reminderSent = true;
+    }
+
+    if (minutesUntil <= 0 && minutesUntil > -1) {
+      await sendScheduledMessage(item, "now");
+      advanceRecurringSchedule(item);
     }
   }
 });
@@ -235,8 +232,17 @@ const commands = [
   new SlashCommandBuilder()
     .setName("schedule")
     .setDescription("Schedule a message")
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel. Leave empty to use current channel.")
+        .setRequired(false)
+    )
     .addStringOption((option) =>
-      option.setName("date").setDescription("DD-MM-YYYY or YYYY/MM/DD").setRequired(true)
+      option
+        .setName("date")
+        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
+        .setRequired(true)
     )
     .addStringOption((option) =>
       option.setName("time").setDescription("HH:mm").setRequired(true)
@@ -246,19 +252,33 @@ const commands = [
     )
     .addStringOption((option) =>
       option
-        .setName("channel")
-        .setDescription("Optional. Mention channels like #chat #wins")
+        .setName("repeat")
+        .setDescription("Repeat schedule")
+        .setRequired(false)
+        .addChoices(
+          { name: "none", value: "none" },
+          { name: "daily", value: "daily" },
+          { name: "weekly", value: "weekly" },
+          { name: "monthly", value: "monthly" }
+        )
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("one_hour_before")
+        .setDescription("Send reminder 1 hour before")
+        .setRequired(false)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("ping_everyone")
+        .setDescription("Ping @everyone")
         .setRequired(false)
     )
     .addAttachmentOption((option) =>
-      option.setName("image").setDescription("Optional image").setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("timezone")
-    .setDescription("Set timezone")
-    .addStringOption((option) =>
-      option.setName("zone").setDescription("Europe/London, GMT+1, EDT").setRequired(true)
+      option
+        .setName("image")
+        .setDescription("Optional image attachment")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -270,6 +290,16 @@ const commands = [
     .setDescription("Cancel a scheduled message")
     .addIntegerOption((option) =>
       option.setName("id").setDescription("Schedule ID").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("timezone")
+    .setDescription("Set timezone")
+    .addStringOption((option) =>
+      option
+        .setName("zone")
+        .setDescription("Example: Europe/London")
+        .setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
