@@ -8,67 +8,27 @@ const {
 
 const cron = require("node-cron");
 const { DateTime } = require("luxon");
-const fs = require("fs");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const SCHEDULES_FILE = "./schedules.json";
-const SETTINGS_FILE = "./settings.json";
-
-let schedules = loadJson(SCHEDULES_FILE, []);
-let settings = loadJson(SETTINGS_FILE, {
-  timezone: "Europe/London",
-});
-
-let nextId =
-  schedules.length > 0 ? Math.max(...schedules.map((s) => s.id)) + 1 : 1;
-
-function loadJson(file, fallback) {
-  try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
+let schedules = [];
+let nextId = 1;
+let serverTimezone = "Europe/London";
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
-function normalizeTimezone(input) {
-  if (!input) return settings.timezone;
+function normalizeTimezone(zone) {
+  const value = zone.trim().toLowerCase();
 
-  const value = input.trim().toLowerCase();
+  if (value === "london" || value === "uk" || value === "gmt+1") return "Europe/London";
+  if (value === "turkey" || value === "istanbul" || value === "gmt+3") return "Europe/Istanbul";
+  if (value === "edt" || value === "est" || value === "et") return "America/New_York";
 
-  const aliases = {
-    london: "Europe/London",
-    uk: "Europe/London",
-    "gmt+1": "Europe/London",
-    bst: "Europe/London",
-
-    turkey: "Europe/Istanbul",
-    istanbul: "Europe/Istanbul",
-    "gmt+3": "Europe/Istanbul",
-
-    edt: "America/New_York",
-    est: "America/New_York",
-    et: "America/New_York",
-    "new york": "America/New_York",
-
-    pdt: "America/Los_Angeles",
-    pst: "America/Los_Angeles",
-    pt: "America/Los_Angeles",
-    "los angeles": "America/Los_Angeles",
-  };
-
-  return aliases[value] || input.trim();
+  return zone.trim();
 }
 
 function parseDateTime(date, time) {
@@ -81,19 +41,18 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
-
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
       [day, month, year] = parts;
     }
   } else {
-    return null;
+    return { isValid: false };
   }
 
   const [hour, minute] = cleanTime.split(":");
 
-  const dt = DateTime.fromObject(
+  return DateTime.fromObject(
     {
       year: Number(year),
       month: Number(month),
@@ -101,13 +60,11 @@ function parseDateTime(date, time) {
       hour: Number(hour),
       minute: Number(minute),
     },
-    { zone: settings.timezone }
+    { zone: serverTimezone }
   );
-
-  return dt.isValid ? dt : null;
 }
 
-function extractChannelIds(rawChannels, fallbackChannelId) {
+function getChannelIds(rawChannels, fallbackChannelId) {
   if (!rawChannels || rawChannels.trim() === "") {
     return [fallbackChannelId];
   }
@@ -122,201 +79,155 @@ function extractChannelIds(rawChannels, fallbackChannelId) {
   return [...new Set(ids)];
 }
 
-function splitMessage(text, maxLength = 1900) {
-  if (text.length <= maxLength) return [text];
-
-  const chunks = [];
-  let current = "";
-
-  for (const line of text.split("\n")) {
-    if ((current + "\n" + line).length > maxLength) {
-      if (current) chunks.push(current);
-      current = line;
-    } else {
-      current = current ? `${current}\n${line}` : line;
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-async function sendScheduledMessage(schedule) {
-  for (const channelId of schedule.channelIds) {
+async function sendScheduledMessage(item) {
+  for (const channelId of item.channelIds) {
     const channel = await client.channels.fetch(channelId);
-    const chunks = splitMessage(schedule.message);
 
-    for (let i = 0; i < chunks.length; i++) {
-      await channel.send({
-        content: chunks[i],
-        files: i === 0 && schedule.imageUrl ? [schedule.imageUrl] : [],
-        allowedMentions: { parse: ["everyone", "roles"] },
-      });
-    }
+    await channel.send({
+      content: item.message,
+      files: item.imageUrl ? [item.imageUrl] : [],
+      allowedMentions: { parse: ["everyone", "roles"] },
+    });
   }
 }
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    if (interaction.commandName === "timezone") {
-      await interaction.deferReply({ ephemeral: true });
+  if (interaction.commandName === "schedule") {
+    const date = interaction.options.getString("date");
+    const time = interaction.options.getString("time");
+    const message = interaction.options.getString("message");
+    const rawChannels = interaction.options.getString("channel");
+    const image = interaction.options.getAttachment("image");
 
-      const zoneInput = interaction.options.getString("zone");
-      const zone = normalizeTimezone(zoneInput);
+    const target = parseDateTime(date, time);
 
-      const test = DateTime.now().setZone(zone);
-      if (!test.isValid) {
-        await interaction.editReply({
-          content:
-            "Invalid timezone. Use something like `Europe/London`, `GMT+1`, `EDT`, or `Europe/Istanbul`.",
-        });
-        return;
-      }
-
-      settings.timezone = zone;
-      saveJson(SETTINGS_FILE, settings);
-
-      await interaction.editReply({
-        content: `Timezone set to ${settings.timezone}.`,
+    if (!target.isValid) {
+      await interaction.reply({
+        content: "Invalid date/time. Use `21-05-2026` and `14:30`.",
+        ephemeral: true,
       });
+      return;
     }
 
-    if (interaction.commandName === "schedule") {
-      await interaction.deferReply({ ephemeral: true });
+    const channelIds = getChannelIds(rawChannels, interaction.channelId);
 
-      const date = interaction.options.getString("date");
-      const time = interaction.options.getString("time");
-      const message = interaction.options.getString("message");
-      const rawChannels = interaction.options.getString("channel");
-      const image = interaction.options.getAttachment("image");
-
-      const target = parseDateTime(date, time);
-
-      if (!target) {
-        await interaction.editReply({
-          content: "Invalid date/time. Use `21-05-2026` and `14:30`.",
-        });
-        return;
-      }
-
-      const channelIds = extractChannelIds(rawChannels, interaction.channelId);
-
-      if (channelIds.length === 0) {
-        await interaction.editReply({
-          content:
-            "No valid channels found. Leave channel empty or mention channels like `#chat #wins`.",
-        });
-        return;
-      }
-
-      const channelNames = [];
-
-      for (const channelId of channelIds) {
-        try {
-          const channel = await client.channels.fetch(channelId);
-          channelNames.push(channel?.name || channelId);
-        } catch {
-          channelNames.push(channelId);
-        }
-      }
-
-      const schedule = {
-        id: nextId++,
-        date,
-        time,
-        timezone: settings.timezone,
-        targetISO: target.toISO(),
-        channelIds,
-        channelNames,
-        message,
-        imageUrl: image ? image.url : null,
-        sent: false,
-      };
-
-      schedules.push(schedule);
-      saveJson(SCHEDULES_FILE, schedules);
-
-      await interaction.editReply({
-        content: `Scheduled ID ${schedule.id} for ${date} ${time} (${settings.timezone}) in ${channelNames
-          .map((name) => `#${name}`)
-          .join(", ")}.`,
+    if (channelIds.length === 0) {
+      await interaction.reply({
+        content: "No valid channel found. Leave channel empty or mention channels like `#chat #wins`.",
+        ephemeral: true,
       });
+      return;
     }
 
-    if (interaction.commandName === "list") {
-      await interaction.deferReply({ ephemeral: true });
+    const channelNames = [];
 
-      const active = schedules.filter((s) => !s.sent);
-
-      if (active.length === 0) {
-        await interaction.editReply({
-          content: "No active scheduled messages.",
-        });
-        return;
+    for (const channelId of channelIds) {
+      try {
+        const channel = await client.channels.fetch(channelId);
+        channelNames.push(channel?.name || channelId);
+      } catch {
+        channelNames.push(channelId);
       }
-
-      await interaction.editReply({
-        content:
-          "Active schedules:\n" +
-          active
-            .map(
-              (s) =>
-                `ID ${s.id} — ${s.date} ${s.time} (${s.timezone}) — ${s.channelNames
-                  .map((name) => `#${name}`)
-                  .join(", ")} — ${s.message.slice(0, 80)}`
-            )
-            .join("\n"),
-      });
     }
 
-    if (interaction.commandName === "cancel") {
-      await interaction.deferReply({ ephemeral: true });
+    const schedule = {
+      id: nextId++,
+      channelIds,
+      channelNames,
+      displayDate: date,
+      displayTime: time,
+      message,
+      imageUrl: image ? image.url : null,
+      target,
+      sent: false,
+    };
 
-      const id = interaction.options.getInteger("id");
-      const before = schedules.length;
+    schedules.push(schedule);
 
-      schedules = schedules.filter((s) => s.id !== id);
-      saveJson(SCHEDULES_FILE, schedules);
+    await interaction.reply({
+      content: `Scheduled ID ${schedule.id} for ${date} ${time} (${serverTimezone}) in ${channelNames
+        .map((name) => `#${name}`)
+        .join(", ")}.`,
+      ephemeral: true,
+    });
+  }
 
-      await interaction.editReply({
-        content:
-          schedules.length === before
-            ? `No schedule found with ID ${id}.`
-            : `Cancelled schedule ID ${id}.`,
+  if (interaction.commandName === "list") {
+    const active = schedules.filter((item) => !item.sent);
+
+    if (active.length === 0) {
+      await interaction.reply({
+        content: "No active scheduled messages.",
+        ephemeral: true,
       });
+      return;
     }
-  } catch (error) {
-    console.error(error);
 
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({
-        content: "Something went wrong. Check Railway logs.",
+    const list = active
+      .map(
+        (item) =>
+          `ID ${item.id} — ${item.displayDate} ${item.displayTime} (${serverTimezone}) — ${item.channelNames
+            .map((name) => `#${name}`)
+            .join(", ")} — ${item.message.slice(0, 80)}`
+      )
+      .join("\n");
+
+    await interaction.reply({
+      content: "Active schedules:\n" + list,
+      ephemeral: true,
+    });
+  }
+
+  if (interaction.commandName === "cancel") {
+    const id = interaction.options.getInteger("id");
+    const before = schedules.length;
+
+    schedules = schedules.filter((item) => item.id !== id);
+
+    await interaction.reply({
+      content:
+        schedules.length === before
+          ? `No schedule found with ID ${id}.`
+          : `Cancelled schedule ID ${id}.`,
+      ephemeral: true,
+    });
+  }
+
+  if (interaction.commandName === "timezone") {
+    const zone = normalizeTimezone(interaction.options.getString("zone"));
+    const test = DateTime.now().setZone(zone);
+
+    if (!test.isValid) {
+      await interaction.reply({
+        content: "Invalid timezone. Try `Europe/London`, `GMT+1`, `EDT`, or `Europe/Istanbul`.",
+        ephemeral: true,
       });
+      return;
     }
+
+    serverTimezone = zone;
+
+    await interaction.reply({
+      content: `Timezone set to ${serverTimezone}.`,
+      ephemeral: true,
+    });
   }
 });
 
 cron.schedule("*/10 * * * * *", async () => {
-  const now = DateTime.utc();
-  let changed = false;
+  const now = DateTime.now().setZone(serverTimezone);
 
-  for (const schedule of schedules) {
-    if (schedule.sent) continue;
+  for (const item of schedules) {
+    if (item.sent) continue;
 
-    const target = DateTime.fromISO(schedule.targetISO).toUTC();
-    const secondsUntil = target.diff(now, "seconds").seconds;
+    const secondsUntil = item.target.diff(now, "seconds").seconds;
 
     if (secondsUntil <= 0) {
-      await sendScheduledMessage(schedule);
-      schedule.sent = true;
-      changed = true;
+      await sendScheduledMessage(item);
+      item.sent = true;
     }
-  }
-
-  if (changed) {
-    saveJson(SCHEDULES_FILE, schedules);
   }
 });
 
@@ -325,10 +236,7 @@ const commands = [
     .setName("schedule")
     .setDescription("Schedule a message")
     .addStringOption((option) =>
-      option
-        .setName("date")
-        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
-        .setRequired(true)
+      option.setName("date").setDescription("DD-MM-YYYY or YYYY/MM/DD").setRequired(true)
     )
     .addStringOption((option) =>
       option.setName("time").setDescription("HH:mm").setRequired(true)
@@ -343,20 +251,14 @@ const commands = [
         .setRequired(false)
     )
     .addAttachmentOption((option) =>
-      option
-        .setName("image")
-        .setDescription("Optional image attachment")
-        .setRequired(false)
+      option.setName("image").setDescription("Optional image").setRequired(false)
     ),
 
   new SlashCommandBuilder()
     .setName("timezone")
-    .setDescription("Set the timezone for future schedules")
+    .setDescription("Set timezone")
     .addStringOption((option) =>
-      option
-        .setName("zone")
-        .setDescription("Europe/London, GMT+1, EDT, Europe/Istanbul")
-        .setRequired(true)
+      option.setName("zone").setDescription("Europe/London, GMT+1, EDT").setRequired(true)
     ),
 
   new SlashCommandBuilder()
