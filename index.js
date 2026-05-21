@@ -31,7 +31,6 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
-
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
@@ -68,15 +67,18 @@ function convertDiscordTimestamps(message) {
   );
 }
 
-async function sendScheduledMessage(item, type = "now") {
-  const channel = await client.channels.fetch(item.channelId);
+async function sendScheduledMessage(item) {
   const messageWithTimestamps = convertDiscordTimestamps(item.message);
 
-  await channel.send({
-    content: `${item.pingEveryone ? "@everyone\n" : ""}${messageWithTimestamps}`,
-    files: item.imageUrl ? [item.imageUrl] : [],
-    allowedMentions: { parse: ["everyone", "roles"] },
-  });
+  for (const channelId of item.channelIds) {
+    const channel = await client.channels.fetch(channelId);
+
+    await channel.send({
+      content: `${item.pingEveryone ? "@everyone\n" : ""}${messageWithTimestamps}`,
+      files: item.imageUrl ? [item.imageUrl] : [],
+      allowedMentions: { parse: ["everyone", "roles"] },
+    });
+  }
 }
 
 function advanceRecurringSchedule(item) {
@@ -97,8 +99,11 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === "schedule") {
+    await interaction.deferReply({ ephemeral: true });
+
     const selectedChannel = interaction.options.getChannel("channel");
-    const channel = selectedChannel || interaction.channel;
+    const selectedChannel2 = interaction.options.getChannel("channel2");
+    const selectedChannel3 = interaction.options.getChannel("channel3");
 
     const date = interaction.options.getString("date");
     const time = interaction.options.getString("time");
@@ -113,18 +118,25 @@ client.on("interactionCreate", async (interaction) => {
     const target = parseDateTime(date, time);
 
     if (!target.isValid) {
-      await interaction.reply({
+      await interaction.editReply({
         content:
           "Invalid date/time. Use date like `21-05-2026` and time like `14:30`.",
-        ephemeral: true,
       });
       return;
     }
 
+    const channels = [selectedChannel, selectedChannel2, selectedChannel3].filter(
+      Boolean
+    );
+
+    if (channels.length === 0) {
+      channels.push(interaction.channel);
+    }
+
     const schedule = {
       id: nextId++,
-      channelId: channel.id,
-      channelName: channel.name,
+      channelIds: channels.map((channel) => channel.id),
+      channelNames: channels.map((channel) => channel.name),
       displayDate: date,
       displayTime: time,
       message,
@@ -139,19 +151,21 @@ client.on("interactionCreate", async (interaction) => {
 
     schedules.push(schedule);
 
-    await interaction.reply({
-      content: `Scheduled ID ${schedule.id} for ${date} ${time} in #${channel.name}. Repeat: ${repeat}.`,
-      ephemeral: true,
+    await interaction.editReply({
+      content: `Scheduled ID ${schedule.id} for ${date} ${time} in ${schedule.channelNames
+        .map((name) => `#${name}`)
+        .join(", ")}. Repeat: ${repeat}.`,
     });
   }
 
   if (interaction.commandName === "list") {
+    await interaction.deferReply({ ephemeral: true });
+
     const active = schedules.filter((item) => !item.sent);
 
     if (active.length === 0) {
-      await interaction.reply({
+      await interaction.editReply({
         content: "No active scheduled messages.",
-        ephemeral: true,
       });
       return;
     }
@@ -159,46 +173,47 @@ client.on("interactionCreate", async (interaction) => {
     const list = active
       .map(
         (item) =>
-          `ID ${item.id} — #${item.channelName} — ${item.displayDate} ${item.displayTime} — repeat: ${item.repeat} — ${item.message.slice(
-            0,
-            80
-          )}`
+          `ID ${item.id} — ${item.channelNames
+            .map((name) => `#${name}`)
+            .join(", ")} — ${item.displayDate} ${item.displayTime} — repeat: ${
+            item.repeat
+          } — ${item.message.slice(0, 80)}`
       )
       .join("\n");
 
-    await interaction.reply({
+    await interaction.editReply({
       content: "Active schedules:\n" + list,
-      ephemeral: true,
     });
   }
 
   if (interaction.commandName === "cancel") {
+    await interaction.deferReply({ ephemeral: true });
+
     const id = interaction.options.getInteger("id");
     const before = schedules.length;
 
     schedules = schedules.filter((item) => item.id !== id);
 
     if (schedules.length === before) {
-      await interaction.reply({
+      await interaction.editReply({
         content: `No schedule found with ID ${id}.`,
-        ephemeral: true,
       });
       return;
     }
 
-    await interaction.reply({
+    await interaction.editReply({
       content: `Cancelled schedule ID ${id}.`,
-      ephemeral: true,
     });
   }
 
   if (interaction.commandName === "timezone") {
+    await interaction.deferReply({ ephemeral: true });
+
     const zone = interaction.options.getString("zone");
     serverTimezone = zone;
 
-    await interaction.reply({
+    await interaction.editReply({
       content: `Timezone set to ${serverTimezone}.`,
-      ephemeral: true,
     });
   }
 });
@@ -217,70 +232,82 @@ cron.schedule("* * * * *", async () => {
       minutesUntil <= 60 &&
       minutesUntil > 59
     ) {
-      await sendScheduledMessage(item, "before");
+      await sendScheduledMessage(item);
       item.reminderSent = true;
     }
 
     if (minutesUntil <= 0 && minutesUntil > -1) {
-      await sendScheduledMessage(item, "now");
+      await sendScheduledMessage(item);
       advanceRecurringSchedule(item);
     }
   }
 });
 
 const commands = [
-new SlashCommandBuilder()
-  .setName("schedule")
-  .setDescription("Schedule a message")
-  .addStringOption((option) =>
-    option
-      .setName("date")
-      .setDescription("DD-MM-YYYY or YYYY/MM/DD")
-      .setRequired(true)
-  )
-  .addStringOption((option) =>
-    option.setName("time").setDescription("HH:mm").setRequired(true)
-  )
-  .addStringOption((option) =>
-    option.setName("message").setDescription("Message").setRequired(true)
-  )
-  .addChannelOption((option) =>
-    option
-      .setName("channel")
-      .setDescription("Channel. Leave empty to use current channel.")
-      .setRequired(false)
-  )
-  .addStringOption((option) =>
-    option
-      .setName("repeat")
-      .setDescription("Repeat schedule")
-      .setRequired(false)
-      .addChoices(
-        { name: "none", value: "none" },
-        { name: "daily", value: "daily" },
-        { name: "weekly", value: "weekly" },
-        { name: "monthly", value: "monthly" }
-      )
-  )
-  .addBooleanOption((option) =>
-    option
-      .setName("one_hour_before")
-      .setDescription("Send reminder 1 hour before")
-      .setRequired(false)
-  )
-  .addBooleanOption((option) =>
-    option
-      .setName("ping_everyone")
-      .setDescription("Ping @everyone")
-      .setRequired(false)
-  )
-  .addAttachmentOption((option) =>
-    option
-      .setName("image")
-      .setDescription("Optional image attachment")
-      .setRequired(false)
-  ),
-  
+  new SlashCommandBuilder()
+    .setName("schedule")
+    .setDescription("Schedule a message")
+    .addStringOption((option) =>
+      option
+        .setName("date")
+        .setDescription("DD-MM-YYYY or YYYY/MM/DD")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("time").setDescription("HH:mm").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("message").setDescription("Message").setRequired(true)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Leave empty to use current channel")
+        .setRequired(false)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("channel2")
+        .setDescription("Optional second channel")
+        .setRequired(false)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("channel3")
+        .setDescription("Optional third channel")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("repeat")
+        .setDescription("Repeat schedule")
+        .setRequired(false)
+        .addChoices(
+          { name: "none", value: "none" },
+          { name: "daily", value: "daily" },
+          { name: "weekly", value: "weekly" },
+          { name: "monthly", value: "monthly" }
+        )
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("one_hour_before")
+        .setDescription("Send reminder 1 hour before")
+        .setRequired(false)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("ping_everyone")
+        .setDescription("Ping @everyone")
+        .setRequired(false)
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName("image")
+        .setDescription("Optional image attachment")
+        .setRequired(false)
+    ),
+
   new SlashCommandBuilder()
     .setName("list")
     .setDescription("List active scheduled messages"),
