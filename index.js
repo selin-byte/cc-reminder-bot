@@ -83,9 +83,20 @@ function extractChannelIds(rawChannels) {
   if (!rawChannels) return [];
 
   const ids = [];
-  const matches = rawChannels.matchAll(/<#(\d+)>/g);
 
-  for (const match of matches) ids.push(match[1]);
+  // #channel mention
+  const mentionMatches = rawChannels.matchAll(/<#(\d+)>/g);
+
+  for (const match of mentionMatches) {
+    ids.push(match[1]);
+  }
+
+  // direct IDs
+  const idMatches = rawChannels.match(/\b\d{17,20}\b/g);
+
+  if (idMatches) {
+    ids.push(...idMatches);
+  }
 
   return [...new Set(ids)];
 }
