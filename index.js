@@ -23,6 +23,38 @@ client.once("ready", () => {
 });
 
 function parseDateTime(date, time) {
+  const cleanDate = date.trim();
+  const cleanTime = time.trim();
+
+  let day, month, year;
+
+  if (cleanDate.includes("-")) {
+    [day, month, year] = cleanDate.split("-");
+  } else if (cleanDate.includes("/")) {
+    const parts = cleanDate.split("/");
+
+    if (parts[0].length === 4) {
+      [year, month, day] = parts;
+    } else {
+      [day, month, year] = parts;
+    }
+  } else {
+    return { isValid: false };
+  }
+
+  const [hour, minute] = cleanTime.split(":");
+
+  return DateTime.fromObject(
+    {
+      year: Number(year),
+      month: Number(month),
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+    },
+    { zone: serverTimezone }
+  );
+}
   let day, month, year;
 
   if (date.includes("-")) {
