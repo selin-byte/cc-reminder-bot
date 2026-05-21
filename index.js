@@ -308,7 +308,7 @@ cron.schedule("*/10 * * * * *", async () => {
     const target = DateTime.fromISO(schedule.targetISO).toUTC();
     const secondsUntil = target.diff(now, "seconds").seconds;
 
-    if (secondsUntil <= 0 && secondsUntil > -120) {
+    if (secondsUntil <= 0) {
       await sendScheduledMessage(schedule);
       schedule.sent = true;
       changed = true;
