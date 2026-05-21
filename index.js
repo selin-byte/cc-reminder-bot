@@ -110,12 +110,15 @@ client.on("interactionCreate", async (interaction) => {
       const selectedChannel2 = interaction.options.getChannel("channel2");
       const selectedChannel3 = interaction.options.getChannel("channel3");
 
-      const channels = [];
+      const channels = [
+  selectedChannel,
+  selectedChannel2,
+  selectedChannel3,
+].filter((c) => c && c.id);
 
-      if (selectedChannel) channels.push(selectedChannel);
-      if (selectedChannel2) channels.push(selectedChannel2);
-      if (selectedChannel3) channels.push(selectedChannel3);
-      if (channels.length === 0) channels.push(interaction.channel);
+if (channels.length === 0 && interaction.channel) {
+  channels.push(interaction.channel);
+}
 
       const date = interaction.options.getString("date");
       const time = interaction.options.getString("time");
