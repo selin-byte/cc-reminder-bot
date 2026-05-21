@@ -262,22 +262,20 @@ cron.schedule("* * * * *", async () => {
 
     const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-    if (
-      item.oneHourBefore &&
-      !item.reminderSent &&
-      minutesUntil <= 60 &&
-      minutesUntil > 59
-    ) {
-      await sendScheduledMessage(item);
-      item.reminderSent = true;
-    }
+if (
+  item.oneHourBefore &&
+  !item.reminderSent &&
+  minutesUntil <= 60 &&
+  minutesUntil > 55
+) {
+  await sendScheduledMessage(item);
+  item.reminderSent = true;
+}
 
-    if (minutesUntil <= 0 && minutesUntil > -1) {
-      await sendScheduledMessage(item);
-      advanceRecurringSchedule(item);
-    }
-  }
-});
+if (minutesUntil <= 0 && minutesUntil > -5) {
+  await sendScheduledMessage(item);
+  advanceRecurringSchedule(item);
+}
 
 const commands = [
   new SlashCommandBuilder()
