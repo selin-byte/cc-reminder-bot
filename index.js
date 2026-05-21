@@ -43,7 +43,7 @@ cron.schedule("* * * * *", async () => {
   for (const item of schedules) {
     if (item.sent) continue;
 
-    const target = new Date(item.time);
+    const target = new Date(item.time + "+01:00");
 
     if (Math.abs(now - target) < 60000) {
       const channel = await client.channels.fetch(item.channelId);
