@@ -59,34 +59,9 @@ function parseDateTime(date, time) {
 async function sendScheduledMessage(item, type = "now") {
   const channel = await client.channels.fetch(item.channelId);
 
-  const embed = new EmbedBuilder()
-    .setTitle(
-      type === "before"
-        ? "⏰ Reminder: Creator College Call Soon"
-        : "🚨 Happening Now"
-    )
-    .setDescription(item.message)
-    .addFields(
-      {
-        name: "Time",
-        value: `${item.displayDate} ${item.displayTime} (${serverTimezone})`,
-        inline: true,
-      },
-      {
-        name: "Channel",
-        value: `#${item.channelName}`,
-        inline: true,
-      }
-    )
-    .setTimestamp();
-
-  if (item.imageUrl) {
-    embed.setImage(item.imageUrl);
-  }
-
   await channel.send({
-    content: item.pingEveryone ? "@everyone" : "",
-    embeds: [embed],
+    content: `${item.pingEveryone ? "@everyone\n" : ""}${item.message}`,
+    files: item.imageUrl ? [item.imageUrl] : [],
     allowedMentions: { parse: ["everyone", "roles"] },
   });
 }
