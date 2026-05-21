@@ -7,7 +7,7 @@ const {
 } = require("discord.js");
 
 const cron = require("node-cron");
-const { DateTime } = require("luxon");
+const { DateTime, FixedOffsetZone } = require("luxon");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -22,14 +22,35 @@ client.once("ready", () => {
 });
 
 function normalizeTimezone(zone) {
-  const value = zone.trim().toLowerCase();
+  const value = zone.trim().toLowerCase().replace(/\s/g, "");
 
-  if (value === "london") return "Europe/London";
-  if (value === "uk") return "Europe/London";
-  if (value === "turkey") return "Europe/Istanbul";
-  if (value === "istanbul") return "Europe/Istanbul";
+  if (value === "london" || value === "uk") return "Europe/London";
+  if (value === "turkey" || value === "istanbul") return "Europe/Istanbul";
+  if (value === "edt" || value === "est" || value === "et") return "America/New_York";
+
+  const gmtMatch = value.match(/^gmt([+-])(\d{1,2})$/);
+  if (gmtMatch) {
+    const sign = gmtMatch[1] === "+" ? 1 : -1;
+    const hours = Number(gmtMatch[2]);
+
+    if (hours >= 0 && hours <= 12) {
+      return `UTC${sign === 1 ? "+" : "-"}${hours}`;
+    }
+  }
 
   return zone.trim();
+}
+
+function getZone(zone) {
+  if (zone.startsWith("UTC+")) {
+    return FixedOffsetZone.instance(Number(zone.replace("UTC+", "")) * 60);
+  }
+
+  if (zone.startsWith("UTC-")) {
+    return FixedOffsetZone.instance(Number(zone.replace("UTC-", "")) * -60);
+  }
+
+  return zone;
 }
 
 function parseDateTime(date, time) {
@@ -61,7 +82,7 @@ function parseDateTime(date, time) {
       hour: Number(hour),
       minute: Number(minute),
     },
-    { zone: serverTimezone }
+    { zone: getZone(serverTimezone) }
   );
 }
 
@@ -71,6 +92,7 @@ function convertDiscordTimestamps(message) {
     (match, date, time) => {
       const dt = parseDateTime(date, time);
       if (!dt.isValid) return match;
+
       return `<t:${Math.floor(dt.toSeconds())}:F>`;
     }
   );
@@ -96,25 +118,11 @@ async function sendScheduledMessage(item) {
     const channel = await client.channels.fetch(channelId);
 
     await channel.send({
-      content: `${item.pingEveryone ? "@everyone\n" : ""}${message}`,
+      content: message,
       files: item.imageUrl ? [item.imageUrl] : [],
       allowedMentions: { parse: ["everyone", "roles"] },
     });
   }
-}
-
-function advanceRecurringSchedule(item) {
-  if (item.repeat === "daily") {
-    item.target = item.target.plus({ days: 1 });
-  } else if (item.repeat === "weekly") {
-    item.target = item.target.plus({ weeks: 1 });
-  } else if (item.repeat === "monthly") {
-    item.target = item.target.plus({ months: 1 });
-  } else {
-    item.sent = true;
-  }
-
-  item.reminderSent = false;
 }
 
 client.on("interactionCreate", async (interaction) => {
@@ -129,11 +137,6 @@ client.on("interactionCreate", async (interaction) => {
       const message = interaction.options.getString("message");
       const rawChannels = interaction.options.getString("channel");
       const image = interaction.options.getAttachment("image");
-      const repeat = interaction.options.getString("repeat") || "none";
-      const oneHourBefore =
-        interaction.options.getBoolean("one_hour_before") || false;
-      const pingEveryone =
-        interaction.options.getBoolean("ping_everyone") || false;
 
       const target = parseDateTime(date, time);
 
@@ -169,20 +172,16 @@ client.on("interactionCreate", async (interaction) => {
         displayTime: time,
         message,
         imageUrl: image ? image.url : null,
-        repeat,
-        oneHourBefore,
-        pingEveryone,
         target,
         sent: false,
-        reminderSent: false,
       };
 
       schedules.push(schedule);
 
       await interaction.editReply({
-        content: `Scheduled ID ${schedule.id} for ${date} ${time} in ${channelNames
+        content: `Scheduled ID ${schedule.id} for ${date} ${time} (${serverTimezone}) in ${channelNames
           .map((name) => `#${name}`)
-          .join(", ")}. Repeat: ${repeat}.`,
+          .join(", ")}.`,
       });
     }
 
@@ -203,9 +202,10 @@ client.on("interactionCreate", async (interaction) => {
           (item) =>
             `ID ${item.id} — ${item.channelNames
               .map((name) => `#${name}`)
-              .join(", ")} — ${item.displayDate} ${item.displayTime} — repeat: ${
-              item.repeat
-            } — ${item.message.slice(0, 80)}`
+              .join(", ")} — ${item.displayDate} ${item.displayTime} (${serverTimezone}) — ${item.message.slice(
+              0,
+              80
+            )}`
         )
         .join("\n");
 
@@ -234,6 +234,15 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
 
       const zone = normalizeTimezone(interaction.options.getString("zone"));
+      const test = DateTime.now().setZone(getZone(zone));
+
+      if (!test.isValid) {
+        await interaction.editReply({
+          content: "Invalid timezone. Use `Europe/London`, `GMT+1`, `GMT+3`, `EDT`, etc.",
+        });
+        return;
+      }
+
       serverTimezone = zone;
 
       await interaction.editReply({
@@ -252,26 +261,16 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 cron.schedule("* * * * *", async () => {
-  const now = DateTime.now().setZone(serverTimezone);
+  const now = DateTime.now().setZone(getZone(serverTimezone));
 
   for (const item of schedules) {
     if (item.sent) continue;
 
     const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-    if (
-      item.oneHourBefore &&
-      !item.reminderSent &&
-      minutesUntil <= 60 &&
-      minutesUntil > 55
-    ) {
-      await sendScheduledMessage(item);
-      item.reminderSent = true;
-    }
-
     if (minutesUntil <= 0 && minutesUntil > -5) {
       await sendScheduledMessage(item);
-      advanceRecurringSchedule(item);
+      item.sent = true;
     }
   }
 });
@@ -298,30 +297,6 @@ const commands = [
         .setDescription("Optional. Mention one or more channels, e.g. #chat #wins")
         .setRequired(false)
     )
-    .addStringOption((option) =>
-      option
-        .setName("repeat")
-        .setDescription("Repeat schedule")
-        .setRequired(false)
-        .addChoices(
-          { name: "none", value: "none" },
-          { name: "daily", value: "daily" },
-          { name: "weekly", value: "weekly" },
-          { name: "monthly", value: "monthly" }
-        )
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("one_hour_before")
-        .setDescription("Send reminder 1 hour before")
-        .setRequired(false)
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("ping_everyone")
-        .setDescription("Ping @everyone")
-        .setRequired(false)
-    )
     .addAttachmentOption((option) =>
       option
         .setName("image")
@@ -346,7 +321,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("zone")
-        .setDescription("Example: Europe/London")
+        .setDescription("Europe/London, GMT+1, GMT+3, EDT")
         .setRequired(true)
     ),
 ].map((command) => command.toJSON());
