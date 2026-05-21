@@ -42,7 +42,6 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
-
     if (parts[0].length === 4) {
       [year, month, day] = parts;
     } else {
@@ -71,9 +70,7 @@ function convertDiscordTimestamps(message) {
     /\{\{time:(\d{2}[-/]\d{2}[-/]\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s+(\d{2}:\d{2})\}\}/g,
     (match, date, time) => {
       const dt = parseDateTime(date, time);
-
       if (!dt.isValid) return match;
-
       return `<t:${Math.floor(dt.toSeconds())}:F>`;
     }
   );
@@ -262,20 +259,22 @@ cron.schedule("* * * * *", async () => {
 
     const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-if (
-  item.oneHourBefore &&
-  !item.reminderSent &&
-  minutesUntil <= 60 &&
-  minutesUntil > 55
-) {
-  await sendScheduledMessage(item);
-  item.reminderSent = true;
-}
+    if (
+      item.oneHourBefore &&
+      !item.reminderSent &&
+      minutesUntil <= 60 &&
+      minutesUntil > 55
+    ) {
+      await sendScheduledMessage(item);
+      item.reminderSent = true;
+    }
 
-if (minutesUntil <= 0 && minutesUntil > -5) {
-  await sendScheduledMessage(item);
-  advanceRecurringSchedule(item);
-}
+    if (minutesUntil <= 0 && minutesUntil > -5) {
+      await sendScheduledMessage(item);
+      advanceRecurringSchedule(item);
+    }
+  }
+});
 
 const commands = [
   new SlashCommandBuilder()
@@ -296,9 +295,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("channel")
-        .setDescription(
-          "Optional. Mention one or more channels, e.g. #chat #wins"
-        )
+        .setDescription("Optional. Mention one or more channels, e.g. #chat #wins")
         .setRequired(false)
     )
     .addStringOption((option) =>
