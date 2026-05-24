@@ -106,10 +106,12 @@ async function sendScheduledMessage(item) {
     const channel = await client.channels.fetch(channelId);
 
     await channel.send({
-      content: item.message,
-      files: item.imageUrl ? [item.imageUrl] : [],
-      allowedMentions: { parse: ["everyone", "roles"] },
-    });
+  content: message,
+  files: item.imageUrl ? [item.imageUrl] : [],
+  allowedMentions: {
+    parse: ["everyone"],
+  },
+});
   }
 }
 
