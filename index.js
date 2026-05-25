@@ -34,18 +34,28 @@ function normalizeTimezone(zone) {
   if (value === "edt" || value === "est" || value === "et") return "America/New_York";
 
   const gmtMatch = value.match(/^gmt([+-])(\d{1,2})$/);
+
   if (gmtMatch) {
     const sign = gmtMatch[1] === "+" ? 1 : -1;
     const hours = Number(gmtMatch[2]);
-    if (hours >= 0 && hours <= 12) return `UTC${sign === 1 ? "+" : "-"}${hours}`;
+
+    if (hours >= 0 && hours <= 12) {
+      return `UTC${sign === 1 ? "+" : "-"}${hours}`;
+    }
   }
 
   return zone.trim();
 }
 
 function getZone(zone) {
-  if (zone.startsWith("UTC+")) return FixedOffsetZone.instance(Number(zone.replace("UTC+", "")) * 60);
-  if (zone.startsWith("UTC-")) return FixedOffsetZone.instance(Number(zone.replace("UTC-", "")) * -60);
+  if (zone.startsWith("UTC+")) {
+    return FixedOffsetZone.instance(Number(zone.replace("UTC+", "")) * 60);
+  }
+
+  if (zone.startsWith("UTC-")) {
+    return FixedOffsetZone.instance(Number(zone.replace("UTC-", "")) * -60);
+  }
+
   return zone;
 }
 
@@ -59,8 +69,12 @@ function parseDateTime(date, time) {
     [day, month, year] = cleanDate.split("-");
   } else if (cleanDate.includes("/")) {
     const parts = cleanDate.split("/");
-    if (parts[0].length === 4) [year, month, day] = parts;
-    else [day, month, year] = parts;
+
+    if (parts[0].length === 4) {
+      [year, month, day] = parts;
+    } else {
+      [day, month, year] = parts;
+    }
   } else {
     return { isValid: false };
   }
@@ -84,14 +98,12 @@ function extractChannelIds(rawChannels) {
 
   const ids = [];
 
-  // #channel mention
   const mentionMatches = rawChannels.matchAll(/<#(\d+)>/g);
 
   for (const match of mentionMatches) {
     ids.push(match[1]);
   }
 
-  // direct IDs
   const idMatches = rawChannels.match(/\b\d{17,20}\b/g);
 
   if (idMatches) {
@@ -106,12 +118,12 @@ async function sendScheduledMessage(item) {
     const channel = await client.channels.fetch(channelId);
 
     await channel.send({
-  content: message,
-  files: item.imageUrl ? [item.imageUrl] : [],
-  allowedMentions: {
-    parse: ["everyone"],
-  },
-});
+      content: item.message,
+      files: item.imageUrl ? [item.imageUrl] : [],
+      allowedMentions: {
+        parse: ["everyone", "roles"],
+      },
+    });
   }
 }
 
@@ -157,7 +169,9 @@ client.on("interactionCreate", async (interaction) => {
       const pending = pendingSchedules.get(key);
 
       if (!pending) {
-        await interaction.editReply({ content: "This schedule form expired. Please run /schedule again." });
+        await interaction.editReply({
+          content: "This schedule form expired. Please run /schedule again.",
+        });
         return;
       }
 
@@ -175,7 +189,9 @@ client.on("interactionCreate", async (interaction) => {
 
       const channelIdsFromInput = extractChannelIds(pending.rawChannels);
       const channelIds =
-        channelIdsFromInput.length > 0 ? channelIdsFromInput : [pending.fallbackChannelId];
+        channelIdsFromInput.length > 0
+          ? channelIdsFromInput
+          : [pending.fallbackChannelId];
 
       const channelNames = [];
 
@@ -207,6 +223,7 @@ client.on("interactionCreate", async (interaction) => {
           .map((name) => `#${name}`)
           .join(", ")}.`,
       });
+
       return;
     }
 
@@ -229,6 +246,7 @@ client.on("interactionCreate", async (interaction) => {
                 )
                 .join("\n"),
       });
+
       return;
     }
 
@@ -246,6 +264,7 @@ client.on("interactionCreate", async (interaction) => {
             ? `No schedule found with ID ${id}.`
             : `Cancelled schedule ID ${id}.`,
       });
+
       return;
     }
 
@@ -267,6 +286,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({
         content: `Timezone set to ${serverTimezone}.`,
       });
+
       return;
     }
   } catch (error) {
@@ -282,7 +302,7 @@ cron.schedule("* * * * *", async () => {
 
     const minutesUntil = item.target.diff(now, "minutes").minutes;
 
-    if (minutesUntil <= 0 && minutesUntil > -5) {
+    if (minutesUntil <= 0) {
       await sendScheduledMessage(item);
       item.sent = true;
     }
@@ -302,7 +322,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("channel")
-        .setDescription("Optional. Mention one or more channels, e.g. #chat #wins")
+        .setDescription("Optional. Mention channels or paste channel IDs")
         .setRequired(false)
     )
     .addAttachmentOption((option) =>
@@ -335,6 +355,7 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), {
       body: commands,
     });
+
     console.log("Commands registered");
   } catch (error) {
     console.error(error);
